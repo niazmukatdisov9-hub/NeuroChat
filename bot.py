@@ -1,209 +1,165 @@
 import asyncio
 import requests
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from collections import deque
 
-# 🔑 КЛЮЧИ
-BOT_TOKEN = "8792752911:AAGEO-USE4lg-2BaqfoxDdE7skgXzCr7QHs"
+TELEGRAM_TOKEN = "8792752911:AAGEO-USE4lg-2BaqfoxDdE7skgXzCr7QHs"
 CLOUDFLARE_API_KEY = "xwM3EhdP-fSx8hQONxjcrmQWn4lbgEUwTQqBzzhl"
 ACCOUNT_ID = "76931ff53ab99e356450b9a6245d4378"
-VIDEO_API_KEY = "sk_live_dHA0ROK7Fn_9r6z1L2tSR-QTEYPAiG42nUykUHdEe-w"
 
-bot = Bot(token=BOT_TOKEN)
+MODEL = "@cf/meta/llama-3-8b-instruct"
+
+bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Хранилище
-users = {}
-languages = {}
+# память пользователей (до 1000 сообщений)
+user_memory = {}
 
-# Меню
-menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="💬 Чат")],
-        [KeyboardButton(text="🖼 Фото"), KeyboardButton(text="🎬 Видео")],
-        [KeyboardButton(text="🌐 Язык"), KeyboardButton(text="🧹 Очистить")],
-        [KeyboardButton(text="🆕 Новый чат"), KeyboardButton(text="👥 Онлайн")]
-    ],
-    resize_keyboard=True
-)
+# язык (просто хранится)
+user_lang = {}
 
-# AI запрос (Cloudflare)
+# статистика
+user_stats = {}
+
+
+# 🔹 запрос к AI
 def ask_ai(messages):
-
-    url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3-8b-instruct"
-
     headers = {
         "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    data = {
-        "messages": messages
-    }
+    response = requests.post(
+        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}",
+        headers=headers,
+        json={"messages": messages}
+    )
 
-    r = requests.post(url, headers=headers, json=data)
-
-    result = r.json()
-
-    try:
-        return result["result"]["response"]
-    except:
-        return str(result)
+    result = response.json()
+    return result["result"]["response"]
 
 
-# Генерация фото
-def generate_image(prompt):
-
-    url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0"
-
-    headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
-    }
-
-    r = requests.post(url, headers=headers, json={"prompt": prompt})
-
-    return "Фото сгенерировано (Cloudflare)"
-
-
-# Генерация видео (пример API)
-def generate_video(prompt):
-
-    url = "https://api.someservice.com/video"
-    headers = {"Authorization": f"Bearer {VIDEO_API_KEY}"}
-
-    r = requests.post(url, headers=headers, json={"prompt": prompt})
-
-    return "Видео создается..."
-
-
-# СТАРТ
+# 🚀 старт
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(message: types.Message):
+    user_id = message.from_user.id
 
-    uid = message.from_user.id
+    user_memory[user_id] = deque(maxlen=1000)
+    user_lang[user_id] = "ru"
+    user_stats[user_id] = 0
 
-    users.setdefault(uid, [])
-    languages.setdefault(uid, "ru")
+    await message.answer(
+        "👋 Бот готов!\n\n"
+        "/lang — смена языка\n"
+        "/clear — очистить память\n"
+        "/stats — статистика\n"
+        "/help — помощь"
+    )
 
-    await message.answer("Бот готов 🚀", reply_markup=menu)
+
+# 📖 помощь
+@dp.message(Command("help"))
+async def help_cmd(message: types.Message):
+    await message.answer(
+        "📖 Команды:\n"
+        "/lang — смена языка\n"
+        "/clear — очистить память\n"
+        "/stats — сколько сообщений отправил\n\n"
+        "Просто пиши сообщение — я отвечу 🤖"
+    )
 
 
-# ЯЗЫК
-@dp.message(F.text == "🌐 Язык")
-async def lang_menu(message: Message):
-
-    kb = ReplyKeyboardMarkup(
+# 🌍 смена языка
+@dp.message(Command("lang"))
+async def change_lang(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Русский")],
-            [KeyboardButton(text="English")],
-            [KeyboardButton(text="中文")]
+            [types.KeyboardButton(text="Русский")],
+            [types.KeyboardButton(text="English")]
         ],
         resize_keyboard=True
     )
+    await message.answer("Выбери язык:", reply_markup=keyboard)
 
-    await message.answer("Выбери язык:", reply_markup=kb)
 
-
-@dp.message(F.text.in_(["Русский", "English", "中文"]))
-async def set_lang(message: Message):
-
-    uid = message.from_user.id
-
+@dp.message(lambda msg: msg.text in ["Русский", "English"])
+async def set_lang(message: types.Message):
     if message.text == "Русский":
-        languages[uid] = "ru"
-    elif message.text == "English":
-        languages[uid] = "en"
+        user_lang[message.from_user.id] = "ru"
+        await message.answer("Язык установлен: Русский")
     else:
-        languages[uid] = "cn"
-
-    await message.answer("Язык изменен", reply_markup=menu)
-
-
-# ОЧИСТКА
-@dp.message(F.text == "🧹 Очистить")
-async def clear(message: Message):
-
-    users[message.from_user.id] = []
-
-    await message.answer("История очищена")
+        user_lang[message.from_user.id] = "en"
+        await message.answer("Language set: English")
 
 
-# НОВЫЙ ЧАТ
-@dp.message(F.text == "🆕 Новый чат")
-async def new_chat(message: Message):
-
-    users[message.from_user.id] = []
-
-    await message.answer("Новый чат создан")
+# 🧹 очистка памяти
+@dp.message(Command("clear"))
+async def clear_memory(message: types.Message):
+    user_memory[message.from_user.id] = deque(maxlen=1000)
+    await message.answer("🧹 История очищена")
 
 
-# ПОЛЬЗОВАТЕЛИ
-@dp.message(F.text == "👥 Онлайн")
-async def count_users(message: Message):
-
-    await message.answer(f"Пользователей: {len(users)}")
-
-
-# ФОТО
-@dp.message(F.text == "🖼 Фото")
-async def photo(message: Message):
-
-    await message.answer("Напиши описание фото")
+# 📊 статистика
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    count = user_stats.get(message.from_user.id, 0)
+    await message.answer(f"📊 Сообщений отправлено: {count}")
 
 
-    @dp.message()
-    async def gen(msg: Message):
-
-        img = generate_image(msg.text)
-
-        await msg.answer(img)
-
-
-# ВИДЕО
-@dp.message(F.text == "🎬 Видео")
-async def video(message: Message):
-
-    await message.answer("Напиши описание видео")
-
-
-    @dp.message()
-    async def genv(msg: Message):
-
-        vid = generate_video(msg.text)
-
-        await msg.answer(vid)
-
-
-# AI ЧАТ
+# 💬 основной чат с эффектом печатания
 @dp.message()
-async def chat(message: Message):
+async def chat(message: types.Message):
+    user_id = message.from_user.id
 
-    uid = message.from_user.id
+    if user_id not in user_memory:
+        user_memory[user_id] = deque(maxlen=1000)
+        user_stats[user_id] = 0
 
-    users.setdefault(uid, [])
-
-    users[uid].append({
+    user_memory[user_id].append({
         "role": "user",
         "content": message.text
     })
 
-    users[uid] = users[uid][-1000:]
+    messages = list(user_memory[user_id])
 
-    answer = ask_ai(users[uid])
+    msg = await message.answer("💬 Печатаю")
 
-    users[uid].append({
-        "role": "assistant",
-        "content": answer
-    })
+    try:
+        # эффект "..."
+        for i in range(3):
+            await asyncio.sleep(0.4)
+            dots = "." * (i + 1)
+            await msg.edit_text(f"💬 Печатаю{dots}")
 
-    await message.answer(answer)
+        # получаем ответ
+        answer = ask_ai(messages)
+
+        # эффект печати
+        output = ""
+        for char in answer:
+            output += char
+
+            try:
+                await msg.edit_text(output[:4000])
+            except:
+                pass
+
+            await asyncio.sleep(0.02)
+
+        user_memory[user_id].append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        user_stats[user_id] += 1
+
+    except Exception:
+        await msg.edit_text("⚠️ Ошибка API")
 
 
-# ЗАПУСК
+# 🚀 запуск
 async def main():
-
     await dp.start_polling(bot)
 
 
