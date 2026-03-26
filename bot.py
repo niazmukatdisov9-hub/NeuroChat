@@ -1,167 +1,73 @@
-import asyncio
+import logging
 import requests
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from collections import deque
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TELEGRAM_TOKEN = "8792752911:AAGEO-USE4lg-2BaqfoxDdE7skgXzCr7QHs"
-CLOUDFLARE_API_KEY = "xwM3EhdP-fSx8hQONxjcrmQWn4lbgEUwTQqBzzhl"
-ACCOUNT_ID = "76931ff53ab99e356450b9a6245d4378"
+# ===== НАСТРОЙКИ =====
+TELEGRAM_TOKEN = "8792752911:AAGEO-USE4lg-2BaqfoxDdE7skgXzCr7QHs"      # от BotFather
+ACCOUNT_ID = "5aca98f5b0f6b087c11b28eddf0b316b"   # ID аккаунта Cloudflare
+API_TOKEN = "cfut_bOCx4Nrj0jVRj65sKGI6i3IPuh9YlYkwihkbAWOx40b6ca7d"     # API токен с правами Workers AI
+MODEL = "@cf/meta/llama-3.2-3b-instruct"   # можно заменить на другую модель
 
-MODEL = "@cf/meta/llama-3-8b-instruct"
+# URL для Cloudflare Workers AI
+AI_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}"
 
-bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher()
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# память пользователей (до 1000 сообщений)
-user_memory = {}
-
-# язык (просто хранится)
-user_lang = {}
-
-# статистика
-user_stats = {}
-
-
-# 🔹 запрос к AI
-def ask_ai(messages):
+# ===== ФУНКЦИЯ ЗАПРОСА К CLOUDFLARE AI =====
+async def ask_cloudflare_ai(prompt: str) -> str:
+    """Отправляет запрос к Cloudflare Workers AI и возвращает ответ."""
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
+        "Authorization": f"Bearer {API_TOKEN}",
         "Content-Type": "application/json"
     }
-
-    response = requests.post(
-        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}",
-        headers=headers,
-        json={"messages": messages}
-    )
-
-    result = response.json()
-    return result["result"]["response"]
-
-
-# 🚀 старт
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    user_id = message.from_user.id
-
-    user_memory[user_id] = deque(maxlen=1000)
-    user_lang[user_id] = "ru"
-    user_stats[user_id] = 0
-
-    await message.answer(
-        "👋 Бот готов!\n\n"
-        "/lang — смена языка\n"
-        "/clear — очистить память\n"
-        "/stats — статистика\n"
-        "/help — помощь"
-    )
-
-
-# 📖 помощь
-@dp.message(Command("help"))
-async def help_cmd(message: types.Message):
-    await message.answer(
-        "📖 Команды:\n"
-        "/lang — смена языка\n"
-        "/clear — очистить память\n"
-        "/stats — сколько сообщений отправил\n\n"
-        "Просто пиши сообщение — я отвечу 🤖"
-    )
-
-
-# 🌍 смена языка
-@dp.message(Command("lang"))
-async def change_lang(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="Русский")],
-            [types.KeyboardButton(text="English")]
-        ],
-        resize_keyboard=True
-    )
-    await message.answer("Выбери язык:", reply_markup=keyboard)
-
-
-@dp.message(lambda msg: msg.text in ["Русский", "English"])
-async def set_lang(message: types.Message):
-    if message.text == "Русский":
-        user_lang[message.from_user.id] = "ru"
-        await message.answer("Язык установлен: Русский")
-    else:
-        user_lang[message.from_user.id] = "en"
-        await message.answer("Language set: English")
-
-
-# 🧹 очистка памяти
-@dp.message(Command("clear"))
-async def clear_memory(message: types.Message):
-    user_memory[message.from_user.id] = deque(maxlen=1000)
-    await message.answer("🧹 История очищена")
-
-
-# 📊 статистика
-@dp.message(Command("stats"))
-async def stats(message: types.Message):
-    count = user_stats.get(message.from_user.id, 0)
-    await message.answer(f"📊 Сообщений отправлено: {count}")
-
-
-# 💬 основной чат с эффектом печатания
-@dp.message()
-async def chat(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id not in user_memory:
-        user_memory[user_id] = deque(maxlen=1000)
-        user_stats[user_id] = 0
-
-    user_memory[user_id].append({
-        "role": "user",
-        "content": message.text
-    })
-
-    messages = list(user_memory[user_id])
-
-    msg = await message.answer("💬 Печатаю")
-
+    # Для инструктивных моделей лучше передавать системный промпт, но API принимает просто messages
+    # Для llama-3.2-3b-instruct используем массив сообщений
+    payload = {
+        "messages": [
+            {"role": "system", "content": "Ты полезный и дружелюбный помощник."},
+            {"role": "user", "content": prompt}
+        ]
+    }
     try:
-        # эффект "..."
-        for i in range(3):
-            await asyncio.sleep(0.4)
-            dots = "." * (i + 1)
-            await msg.edit_text(f"💬 Печатаю{dots}")
+        response = requests.post(AI_URL, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        # Успешный ответ содержит поле result.response
+        if data.get("success"):
+            answer = data["result"]["response"]
+            return answer.strip()
+        else:
+            logger.error(f"Cloudflare API error: {data.get('errors')}")
+            return "Извините, произошла ошибка при обращении к ИИ."
+    except Exception as e:
+        logger.error(f"Ошибка запроса: {e}")
+        return "Не удалось связаться с сервером ИИ."
 
-        # получаем ответ
-        answer = ask_ai(messages)
+# ===== ОБРАБОТЧИКИ TELEGRAM =====
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот на базе Cloudflare AI. Просто отправь сообщение, и я отвечу.")
 
-        # эффект печати
-        output = ""
-        for char in answer:
-            output += char
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    logger.info(f"Получено: {user_text}")
+    await update.message.chat.send_action(action="typing")
+    answer = await ask_cloudflare_ai(user_text)
+    await update.message.reply_text(answer)
 
-            try:
-                await msg.edit_text(output[:4000])
-            except:
-                pass
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.warning(f"Ошибка: {context.error}")
 
-            await asyncio.sleep(0.02)
-
-        user_memory[user_id].append({
-            "role": "assistant",
-            "content": answer
-        })
-
-        user_stats[user_id] += 1
-
-    except Exception:
-        await msg.edit_text("⚠️ Ошибка API")
-
-
-# 🚀 запуск
-async def main():
-    await dp.start_polling(bot)
-
+# ===== ЗАПУСК =====
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
+    logger.info("Бот запущен...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
